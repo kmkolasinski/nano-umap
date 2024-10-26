@@ -1,0 +1,4 @@
+numba==0.57.1
+# usearch is used to run approximate nearest neighbor search
+usearch==2.15.2
+tqdm>=4.66.0

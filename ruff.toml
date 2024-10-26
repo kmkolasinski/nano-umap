@@ -1,0 +1,48 @@
+target-version = "py311"
+line-length = 100
+exclude = [
+    ".tox",
+    ".git",
+    "venv",
+    "notebooks",
+]
+
+# Apply fixes automatically
+fix = true
+
+[format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+# By default, Ruff enables Flake8's F rules, along with a subset of the E rules,
+# omitting any stylistic rules that overlap with the use of a formatter, like ruff format or Black.
+# For more details see https://docs.astral.sh/ruff/rules/
+
+[lint]
+exclude = ["*.ipynb"]
+select =  [
+    "E", # pycodestyl
+    "F", # Pyflakes
+    "I", # isort
+    ]
+extend-select = [
+    "UP",  # pyupgrade
+    "D",   # pydocstyle
+]
+# as long as we have interrogate we don't require docstring everywhere
+# more details can be found here https://docs.astral.sh/ruff/rules/#pydocstyle-d
+ignore = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107", "D205", "D415"]
+# Only allow autofix for these import-related and docstring rules
+fixable = ["F401", "F403", "I001", "D411", "D415", "D208", "D209", "D202"]
+
+[lint.pydocstyle]
+convention = "google"
