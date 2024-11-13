@@ -1,18 +1,23 @@
 import logging
-import numba as nb
+from abc import ABC, abstractmethod
 import numpy as np
+import numba
+from scipy.sparse import coo_matrix
+import numba as nb
 from scipy import sparse
 from tqdm import tqdm
 from pynndescent import NNDescent
-from nano_umap import utils
 from umap import spectral
 
 
+logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.DEBUG)
 
+_NUMBA_COMPILED_FN = {}
 
-class NanoUMAP:
+
+class NanoUMAPBase(ABC):
     def __init__(
         self,
         n_components: int = 2,
@@ -39,29 +44,9 @@ class NanoUMAP:
         self._negative_sample_rate = negative_sample_rate
         self._n_jobs = n_jobs
 
+    @abstractmethod
     def fit_transform(self, dataset: np.ndarray) -> np.ndarray:
-        knn_indices, knn_similarities = self._get_knn(dataset)
-        graph = utils.to_adjacency_matrix(knn_indices, knn_similarities).tocoo()
-
-        pbar = self._get_progress_bar()
-        update_step_fn = _get_update_step_fn(self._n_jobs == -1)
-
-        x = self._get_initial_embedding(dataset, graph)
-        n_epochs = self._get_n_epochs(graph.shape[0])
-
-        for iteration in pbar(range(n_epochs)):
-            x = update_step_fn(
-                x,
-                rows=graph.row,
-                cols=graph.col,
-                scores=graph.data,
-                lr=self._get_lr(iteration, n_epochs),
-                n_neighbors=self._n_neighbors,
-                n_neg_samples=self._get_n_neg_samples(iteration, n_epochs),
-                repulsion_strength=self._repulsion_strength,
-            )
-
-        return x
+        pass
 
     def _get_progress_bar(self):
         if self._verbose:
@@ -77,7 +62,10 @@ class NanoUMAP:
         if not isinstance(dataset, np.ndarray):
             dataset = np.array(dataset)
 
-        LOGGER.info(f"Building Usearch KNN index for dataset of shape {dataset.shape}")
+        if self._verbose:
+            LOGGER.info(
+                f"Building Usearch KNN index for dataset of shape {dataset.shape}"
+            )
         n_trees = min(64, 5 + int(round((dataset.shape[0]) ** 0.5 / 20.0)))
         n_iters = max(5, int(round(np.log2(dataset.shape[0]))))
         knn_search_index = NNDescent(
@@ -92,9 +80,12 @@ class NanoUMAP:
         )
         knn_indices, knn_dists = knn_search_index.neighbor_graph
         knn_scores = 1 - knn_dists
-        return knn_indices, knn_scores.astype(np.float32)
+        self._precomputed_knn = knn_indices, knn_scores.astype(np.float32)
+        return self._precomputed_knn
 
-    def _get_initial_embedding(self, dataset: np.ndarray, graph: sparse.coo_matrix) -> np.ndarray:
+    def _get_initial_embedding(
+        self, dataset: np.ndarray, graph: sparse.coo_matrix
+    ) -> np.ndarray:
         if self._random_state is not None:
             np.random.seed(self._random_state)
 
@@ -102,16 +93,24 @@ class NanoUMAP:
             return self._init.copy()
         elif self._init == "spectral":
             affinity = 0.5 * (graph.T + graph)
-            LOGGER.info("Initializing embedding with UMAP spectral initialization")
+            if self._verbose:
+                LOGGER.info("Initializing embedding with UMAP spectral initialization")
             embedding = spectral.spectral_layout(
-                dataset, affinity, dim=self._n_components, random_state=self._random_state
+                dataset,
+                affinity,
+                dim=self._n_components,
+                random_state=self._random_state,
             )
         elif self._init == "random":
-            LOGGER.info("Initializing embedding with random")
+            if self._verbose:
+                LOGGER.info("Initializing embedding with random")
             embedding = np.random.uniform(size=(graph.shape[0], self._n_components))
         else:
             raise ValueError(f"Unknown init method: {self._init}")
-        return embedding.astype(np.float32)
+
+        min_vals, max_vals = np.min(embedding, 0), np.max(embedding, 0)
+        embedding = 10.0 * (embedding - min_vals) / (max_vals - min_vals)
+        return embedding.astype(np.float32, order="C")
 
     def _get_n_epochs(self, n_values: int) -> int:
         if self._n_epochs is not None:
@@ -124,65 +123,6 @@ class NanoUMAP:
     def _get_n_neg_samples(self, iteration: int, n_epochs: int) -> int:
         n_neg = self._n_neighbors * (1 - iteration / n_epochs)
         return int(max(0.0, self._negative_sample_rate * n_neg))
-
-
-def _update_step(
-    x: np.ndarray,
-    rows: np.ndarray,
-    cols: np.ndarray,
-    scores: np.ndarray,
-    lr: float = 1.0,
-    n_neighbors: int = 15,
-    n_neg_samples: int = 15,
-    repulsion_strength: float = 1.0,
-    a: float = 1.5,
-    b: float = 1.1,
-) -> np.ndarray:
-    n_vectors, dim = x.shape
-    dtype = np.float32
-    b1, a1 = dtype(1.0 - b), dtype(0.001)
-    c0 = dtype(-2.0 * a * b)
-    c1 = dtype(2.0 * repulsion_strength * b)
-    lr_pos = dtype(lr / n_neighbors)
-
-    for i in nb.prange(rows.shape[0]):
-        row, col, s_ij = rows[i], cols[i], scores[i]
-        xi = x[row]
-        xj = x[col]
-
-        # attraction force, copied from UMAP source code
-        diff = xi - xj
-        dij = rdot(diff)
-        if dij == 0.0:
-            continue
-
-        grad_coeff = c0 * pow(dij, b1) / (a * pow(dij, b) + dtype(1.0))
-        grad = s_ij * grad_coeff * diff
-        for d in range(dim):
-            grad_value = rclip(grad[d]) * lr_pos
-            xi[d] += grad_value
-            xj[d] -= grad_value
-
-    # sampling negatives for i-th point
-    if n_neg_samples > 0:
-        lr_neg = dtype(lr / n_neg_samples)
-        for i in nb.prange(n_vectors):
-            for idx in range(n_neg_samples):
-                j = np.random.randint(n_vectors)
-                if j == i:
-                    continue
-
-                # repulsion force, copied from UMAP source code
-                diff = x[i] - x[j]
-                dij = rdot(diff)
-                if dij == 0.0:
-                    continue
-                grad_coeff = c1 / ((a1 + dij) * (a * pow(dij, b) + dtype(1.0)))
-                grad = grad_coeff * diff
-                for d in range(dim):
-                    x[i][d] += rclip(grad[d]) * lr_neg
-
-    return x
 
 
 @nb.njit("f4(f4)", inline="always", fastmath=True, cache=True)
@@ -203,16 +143,115 @@ def rdot(x: np.ndarray) -> float:
     return result
 
 
-_update_step_njit_parallel = nb.njit(
-    _update_step, parallel=True, fastmath=True, boundscheck=False
-)
+def make_epochs_per_sample(weights: np.ndarray, n_epochs: int) -> np.ndarray:
+    """Given a set of weights and number of epochs generate the number of
+    epochs per sample for each weight.
 
-_update_step_njit = nb.njit(
-    _update_step, parallel=False, fastmath=True, boundscheck=False
-)
+    Parameters
+    ----------
+    weights: array of shape (n_1_simplices)
+        The weights of how much we wish to sample each 1-simplex.
+
+    n_epochs: int
+        The total number of epochs we want to train for.
+
+    Returns
+    -------
+    An array of number of epochs per sample, one for each 1-simplex.
+    """
+    min_value = weights.max() / float(n_epochs)
+    weights[weights < min_value] = min_value
+
+    result = -1.0 * np.ones(weights.shape[0], dtype=np.float64)
+    n_samples = n_epochs * (weights / weights.max())
+    result[n_samples > 0] = float(n_epochs) / np.float64(n_samples[n_samples > 0])
+    return result
 
 
-def _get_update_step_fn(parallel: bool = False):
-    if parallel:
-        return _update_step_njit_parallel
-    return _update_step_njit
+def get_compiled_fn(func, parallel: bool = False, local_vars: dict | None = None):
+    if (func, parallel) in _NUMBA_COMPILED_FN:
+        return _NUMBA_COMPILED_FN[(func, parallel)]
+    if local_vars is None:
+        local_vars = {}
+    compiled_fn = nb.njit(
+        func, parallel=parallel, fastmath=True, boundscheck=False, locals=local_vars
+    )
+    _NUMBA_COMPILED_FN[(func, parallel)] = compiled_fn
+    return compiled_fn
+
+
+@numba.njit
+def convert_to_sparse(knn_indices: np.ndarray, knn_values: np.ndarray):
+    n_vectors, n_neighbors = knn_indices.shape
+    total_edges = n_vectors * n_neighbors * 2  # Since we add both (i, j) and (j, i)
+    rows = np.empty(total_edges, dtype=np.int32)
+    cols = np.empty(total_edges, dtype=np.int32)
+    distances = np.empty(total_edges, dtype=np.float32)
+    n_values = 0
+
+    for i in range(n_vectors):
+        for k in range(n_neighbors):
+            j = knn_indices[i, k]
+            d = knn_values[i, k]
+            min_i_j = min(i, j)
+            max_i_j = max(i, j)
+
+            rows[n_values] = min_i_j
+            cols[n_values] = max_i_j
+            distances[n_values] = d
+            n_values = n_values + 1
+
+            rows[n_values] = min_i_j
+            cols[n_values] = max_i_j
+            distances[n_values] = d
+            n_values = n_values + 1
+
+    return rows[:n_values], cols[:n_values], distances[:n_values]
+
+
+@numba.njit()
+def aggregate_edges(sorted_rows, sorted_cols, sorted_distances):
+    n = len(sorted_rows)
+    if n == 0:
+        return (
+            np.empty(0, dtype=sorted_rows.dtype),
+            np.empty(0, dtype=sorted_cols.dtype),
+            np.empty(0, dtype=sorted_distances.dtype),
+        )
+
+    final_rows = [sorted_rows[0]]
+    final_cols = [sorted_cols[0]]
+    final_distances = [sorted_distances[0]]
+
+    for i in range(1, n):
+        if (
+            sorted_rows[i] == sorted_rows[i - 1]
+            and sorted_cols[i] == sorted_cols[i - 1]
+        ):
+            # Duplicate edge, take the minimum distance
+            if sorted_distances[i] < final_distances[-1]:
+                final_distances[-1] = sorted_distances[i]
+        else:
+            # New edge
+            final_rows.append(sorted_rows[i])
+            final_cols.append(sorted_cols[i])
+            final_distances.append(sorted_distances[i])
+
+    return np.array(final_rows), np.array(final_cols), np.array(final_distances)
+
+
+def to_adjacency_matrix(knn_indices: np.ndarray, knn_values: np.ndarray):
+    """Returns upper triangular adjacency matrix from kNN indices and values"""
+    rows, cols, distances = convert_to_sparse(knn_indices, knn_values)
+    order = np.lexsort((cols, rows))
+    sorted_rows = rows[order]
+    sorted_cols = cols[order]
+    sorted_distances = distances[order]
+    final_rows, final_cols, final_distances = aggregate_edges(
+        sorted_rows, sorted_cols, sorted_distances
+    )
+    graph = coo_matrix(
+        (final_distances, (final_rows, final_cols)),
+        shape=(knn_indices.shape[0], knn_indices.shape[0]),
+    )
+    return graph
