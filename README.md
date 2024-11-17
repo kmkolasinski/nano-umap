@@ -26,7 +26,7 @@ See [demo.ipynb](notebooks/demo.ipynb) to reproduce all the results below.
 ## Assumptions 
 
 All methods start from the same steps:
-* Search for top-k nearst neighbors using `pynndescent` package, similarly UMAP does. See
+* Search for top-k nearest neighbors using `pynndescent` package, similarly UMAP does. See
   `core.NanoUMAPBase._get_knn` for more details, but this is basically copy of UMAP way of doing 
   this.
 * Initialize low dimensional embeddings:
