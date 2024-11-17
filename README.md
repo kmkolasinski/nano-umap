@@ -13,6 +13,18 @@ pip install nano-umap
 Simple implementation of UMAP like algorithm in Python. It is designed to be simple 
 and easy to understand. 
 
+## References
+
+These resources are definitely worth to read:
+* 2018 - [UMAP Paper](https://arxiv.org/abs/1802.03426) - UMAP: Uniform Manifold Approximation and 
+  Projection for Dimension Reduction
+* 2016 - [LargeViz](https://arxiv.org/abs/1602.00370) - Visualizing Large-scale and 
+  High-dimensional Data.
+* 2021 - [PaCMAP Paper](https://jmlr.org/papers/v22/20-1061.html) - Understanding How Dimension 
+  Reduction Tools Work: An Empirical Approach to Deciphering t-SNE, UMAP, TriMap, and PaCMAP 
+  for Data Visualization
+* [UMAP implementation on GPU with cuML](https://developer.nvidia.com/blog/even-faster-and-more-scalable-umap-on-the-gpu-with-rapids-cuml/) 
+
 
 ## The content of this project
 
