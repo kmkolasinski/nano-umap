@@ -23,7 +23,9 @@ These resources are definitely worth to read:
 * 2021 - [PaCMAP Paper](https://jmlr.org/papers/v22/20-1061.html) - Understanding How Dimension 
   Reduction Tools Work: An Empirical Approach to Deciphering t-SNE, UMAP, TriMap, and PaCMAP 
   for Data Visualization
-* [UMAP implementation on GPU with cuML](https://developer.nvidia.com/blog/even-faster-and-more-scalable-umap-on-the-gpu-with-rapids-cuml/) 
+* [UMAP implementation on GPU with cuML](https://developer.nvidia.com/blog/even-faster-and-more-scalable-umap-on-the-gpu-with-rapids-cuml/)
+* 2022 - [GiDR-DUN](https://arxiv.org/pdf/2206.09689) - GiDR-DUN: Gradient Dimensionality Reduction 
+  Differences and Unification
 
 
 ## The content of this project
